@@ -21,7 +21,7 @@ body {
    LOGIN PAGE BACKGROUND ONLY
 -------------------------------- */
 .login-page {
-    background: url("/static/images/login_bg.jpg") no-repeat center center fixed;
+    background: url("/images/login_bg.jpg") no-repeat center center fixed;
     background-size: cover;
     display: flex;
     justify-content: center;
@@ -553,3 +553,4 @@ button:hover, .btn:hover {
   box-shadow: 0 0 16px rgba(0, 255, 200, 0.25);
   transform: translateY(-1px);
 }
+
