@@ -1,0 +1,6 @@
+url_length,has_sql_keyword,has_script,request_size,label
+45,0,0,300,0
+120,1,0,1500,1
+80,0,1,900,1
+35,0,0,200,0
+95,1,1,1800,1
