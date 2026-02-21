@@ -9,12 +9,12 @@ app.secret_key = "intru_guard_secret"
 
 import joblib
 
-# Load trained demo models
+# Load trained demo models and label encoders
 network_model = joblib.load("models/network_model.pkl")
-network_scaler = joblib.load("models/network_scaler.pkl")
+network_le = joblib.load("models/network_label_encoders.pkl")
 
 web_model = joblib.load("models/web_model.pkl")
-web_scaler = joblib.load("models/web_scaler.pkl")
+web_le = joblib.load("models/web_label_encoders.pkl")
 
 # Dummy users for login
 users = {
@@ -136,51 +136,59 @@ def upload(mode):
             flash("Uploaded CSV is empty", "danger")
             return redirect(request.url)
 
-        # 5. Scale data
+        # 5. Encode and prepare data
         try:
-            scaler = network_scaler if mode == "network" else web_scaler
+            le_dict = network_le if mode == "network" else web_le
             
-            # --- COMPATIBILITY ADAPTER ---
-            # If the user uploads a CIC-IDS2017/DDoS2019 file (like DrDoS_DNS.csv),
-            # adapt the columns to match what the NSL-KDD trained model expects.
-            if mode == "network" and "flow_duration" in df.columns and "duration" not in df.columns:
-                print("DEBUG: Auto-adapting CIC-DDoS columns to NSL-KDD format...")
-                # Map available features to expected features (Best Effort for Demo)
-                df["duration"] = df["flow_duration"]
-                df["src_bytes"] = df.get("total_forward_packets_length", 0)
-                df["dst_bytes"] = df.get("total_backward_packets_length", 0)
-                df["wrong_fragment"] = 0
-                df["urgent"] = 0
-                flash("Adapted CIC-DDoS dataset to compatible format for demonstration.", "warning")
-            # -----------------------------
-            
-            # Robustly filter columns to match what the model expects
-            if hasattr(scaler, "feature_names_in_"):
-                required_features = list(scaler.feature_names_in_)
-                
-                # Check for missing features
-                missing_features = [f for f in required_features if f not in df.columns]
-                if missing_features:
-                    hint = ""
-                    # Check if it looks like the user uploaded the WRONG dataset type
-                    if mode == "web" and "duration" in df.columns:
-                        hint = " (It looks like you uploaded a Network CSV to the Web module. Please switch to Network Analysis.)"
-                    elif mode == "network" and "url_length" in df.columns:
-                        hint = " (It looks like you uploaded a Web CSV to the Network module. Please switch to Web Analysis.)"
-                    elif "Flow Duration" in df.columns or "Dst Port" in df.columns:
-                        hint = " (It looks like you are uploading a raw CIC-IDS2017 dataset. This demo ONLY works with the simple 'demo_network.csv' or 'demo_web.csv' provided in the project root. The models are not trained on raw CIC-IDS2017 data.)"
-                        
-                    flash(f"Missing columns: {', '.join(missing_features)}.{hint}", "danger")
-                    return redirect(request.url)
-                    
-                # Filter and reorder DataFrame to match scaler's features exactly
-                # This drops extra columns like 'label', 'flag', etc. automatically
-                df_to_scale = df[required_features]
-            else:
-                # Fallback if attribute is missing (shouldn't happen with 1.8.0)
-                df_to_scale = df
+            # Define features based on mode
+            network_features = [
+                "duration", "protocol_type", "service", "flag", "src_bytes", "dst_bytes",
+                "land", "wrong_fragment", "urgent", "hot", "num_failed_logins", "logged_in",
+                "num_compromised", "root_shell", "su_attempted", "num_root", "num_file_creations",
+                "num_shells", "num_access_files", "num_outbound_cmds", "is_host_login",
+                "is_guest_login", "count", "srv_count", "serror_rate", "srv_serror_rate",
+                "rerror_rate", "srv_rerror_rate", "same_srv_rate", "diff_srv_rate",
+                "srv_diff_host_rate", "dst_host_count", "dst_host_srv_count",
+                "dst_host_same_srv_rate", "dst_host_diff_srv_rate", "dst_host_same_src_port_rate",
+                "dst_host_srv_diff_host_rate", "dst_host_serror_rate", "dst_host_srv_serror_rate",
+                "dst_host_rerror_rate", "dst_host_srv_rerror_rate"
+            ]
 
-            df_scaled = scaler.transform(df_to_scale)
+            web_features = [
+                "request_duration", "http_method", "user_agent_type", "url_length", "param_count",
+                "special_chars_query", "content_length", "cookie_size", "referrer_type",
+                "is_auth_header_present", "num_redirects", "response_code", "response_time",
+                "bot_score", "ip_reputation", "geo_location_id", "session_lifetime",
+                "db_query_count", "file_upload_count", "api_endpoint_id", "is_ajax",
+                "header_entropy", "payload_entropy", "malicious_signatures_count"
+            ]
+
+            all_features = network_features if mode == "network" else web_features
+            
+            # Check for missing features
+            missing_features = [f for f in all_features if f not in df.columns]
+            if missing_features:
+                hint = ""
+                # Check if it looks like the user uploaded the WRONG dataset type
+                if mode == "web" and "duration" in df.columns:
+                    hint = " (It looks like you uploaded a Network CSV to the Web module. Please switch to Network Analysis.)"
+                elif mode == "network" and "request_duration" in df.columns:
+                    hint = " (It looks like you uploaded a Web CSV to the Network module. Please switch to Web Analysis.)"
+                elif "Flow Duration" in df.columns or "Dst Port" in df.columns:
+                    hint = " (It looks like you are uploading a raw CIC-IDS2017 dataset. This demo ONLY works with the provided 'demo_network.csv' or 'demo_web.csv' files.)"
+                    
+                flash(f"Missing columns: {', '.join(missing_features)}.{hint}", "danger")
+                return redirect(request.url)
+            
+            # Select and reorder columns
+            df_to_process = df[all_features].copy()
+            
+            # Encode string columns using the same encoders used during training
+            for col in all_features:
+                if col in le_dict:
+                    df_to_process[col] = le_dict[col].transform(df_to_process[col])
+            
+            df_to_predict = df_to_process
         except Exception as e:
             flash(
                 f"Data processing error: {e}",
@@ -192,27 +200,29 @@ def upload(mode):
 
         # 6. Predict
         if mode == "network":
-            predictions = network_model.predict(df_scaled)
+            predictions = network_model.predict(df_to_predict)
         elif mode == "web":
-            predictions = web_model.predict(df_scaled)
+            predictions = web_model.predict(df_to_predict)
         else:
             flash("Invalid analysis mode", "danger")
             return redirect(url_for("dashboard"))
 
         # 7. Convert results
-        df["Prediction"] = ["Attack" if p == 1 else "Benign" for p in predictions]
+        df["Prediction"] = ["Attack" if p != "normal" else "Benign" for p in predictions]
         
         # --- ACCURACY CALCULATION ---
         accuracy_msg = None
         if "label" in df.columns:
             try:
-                # Ensure labels are integers (0/1) for comparison if needed, 
-                # or string compare if model outputs ints (0/1) and csv has 0/1 ints.
-                # The model output 'predictions' are 0 and 1.
-                # Let's assume CSV labels are also 0 and 1 or can be cast.
+                # Convert predictions to comparable format with labels
+                pred_binary = [0 if p == "normal" else 1 for p in predictions]
+                # Try to convert labels to binary
+                try:
+                    ground_truth = df["label"].map(lambda x: 0 if x == "normal" else 1)
+                except:
+                    ground_truth = df["label"].astype(int)
                 
-                ground_truth = df["label"].astype(int)
-                acc = accuracy_score(ground_truth, predictions)
+                acc = accuracy_score(ground_truth, pred_binary)
                 accuracy_msg = f"{acc * 100:.2f}%"
             except Exception as e:
                 print(f"Accuracy calc failed: {e}")
