@@ -1,122 +1,86 @@
 import pandas as pd
 import joblib
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report
 import os
 
-# Define NSL-KDD Columns
-columns = [
-    "duration", "protocol_type", "service", "flag", "src_bytes", "dst_bytes",
-    "land", "wrong_fragment", "urgent", "hot", "num_failed_logins",
-    "logged_in", "num_compromised", "root_shell", "su_attempted", "num_root",
-    "num_file_creations", "num_shells", "num_access_files", "num_outbound_cmds",
-    "is_host_login", "is_guest_login", "count", "srv_count", "serror_rate",
-    "srv_serror_rate", "rerror_rate", "srv_rerror_rate", "same_srv_rate",
-    "diff_srv_rate", "srv_diff_host_rate", "dst_host_count", "dst_host_srv_count",
-    "dst_host_same_srv_rate", "dst_host_diff_srv_rate", "dst_host_same_src_port_rate",
-    "dst_host_srv_diff_host_rate", "dst_host_serror_rate", "dst_host_srv_serror_rate",
-    "dst_host_rerror_rate", "dst_host_srv_rerror_rate", "label"
-]
+# ==================== CONFIGURATION ====================
 
-# Path to the uploaded dataset
-train_dataset_path = "uploads/train.csv.csv"
-test_dataset_path = "uploads/test.csv.csv"
+modules = {
+    "network": {
+        "set_a": ["src_bytes", "dst_bytes", "logged_in", "count", "srv_count", "dst_host_srv_count", "dst_host_same_srv_rate"],
+        "set_b": ["serror_rate", "srv_serror_rate", "same_srv_rate", "diff_srv_rate", "dst_host_count", "dst_host_same_src_port_rate", "dst_host_serror_rate"],
+        "train_path": "uploads/train.csv.csv",
+        "test_path": "uploads/test.csv.csv",
+        "model_path": "models/network_model.pkl",
+        "le_path": "models/network_label_encoders.pkl"
+    },
+    "web": {
+        "set_a": ["Flow Duration", "Total Fwd Packets", "Total Backward Packets", "Total Length of Fwd Packets", "Fwd Packet Length Mean", "Bwd Packet Length Mean", "Flow Bytes/s"],
+        "set_b": ["Flow Packets/s", "Flow IAT Mean", "Fwd IAT Total", "Bwd IAT Total", "Packet Length Mean", "Average Packet Size", "ACK Flag Count"],
+        "train_path": "uploads/web_train_split.csv",
+        "test_path": "uploads/web_test_split.csv",
+        "model_path": "models/web_model.pkl",
+        "le_path": "models/web_label_encoders.pkl"
+    }
+}
 
-print(f"LOADING: Loading full training dataset from {train_dataset_path}...")
+os.makedirs("models", exist_ok=True)
 
-try:
-    # 1. Load Data
-    train_df = pd.read_csv(train_dataset_path, header=None)
+for mod_name, config in modules.items():
+    print(f"\n🚀 PROCESSING MODULE: {mod_name.upper()}")
     
-    # Handle column count
-    if train_df.shape[1] == 42:
-        train_df.columns = columns
-    elif train_df.shape[1] == 43:
-        train_df.columns = columns + ["difficulty"]
-    else:
-        train_df = train_df.iloc[:, :42]
-        train_df.columns = columns
+    try:
+        # 1. Load Training Data
+        print(f"LOADING: {config['train_path']}...")
+        train_df = pd.read_csv(config['train_path'], header=None)
+        
+        # Mapping: 7 features + label
+        train_df.columns = config['set_a'] + ["label"]
+        print(f"DONE: Loaded {len(train_df)} rows with {train_df.shape[1]} columns.")
 
-    print(f"DONE: Loaded {len(train_df)} training rows.")
+        # 2. Binary Label Mapping
+        train_df["label_bin"] = train_df["label"].apply(lambda x: 0 if str(x).strip().lower() == "normal" else 1)
+        
+        X = train_df[config['set_a']]
+        y = train_df["label_bin"]
 
-    # 2. Encoding and Binary Label Mapping
-    print("INFO: Encoding categorical features and preparing binary classification...")
-    
-    # Map labels to binary: 0 for normal, 1 for everything else (attack)
-    train_df["label"] = train_df["label"].apply(lambda x: 0 if str(x).strip().lower() == "normal" else 1)
-    
-    le_dict = {}
-    X = train_df.drop(["label", "difficulty"], axis=1, errors='ignore')
-    
-    categorical_cols = ["protocol_type", "service", "flag"]
-    
-    for col in categorical_cols:
-        le = LabelEncoder()
-        X[col] = le.fit_transform(X[col].astype(str))
-        le_dict[col] = le
-    
-    y = train_df["label"]
+        # 3. Model Training
+        print(f"START: Training RandomForest (Set A)...")
+        model = RandomForestClassifier(n_estimators=50, max_depth=8, class_weight='balanced', random_state=42, n_jobs=-1)
+        
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.1, random_state=42, stratify=y)
+        model.fit(X_train, y_train)
 
-    # 3. Model Training
-    from sklearn.ensemble import RandomForestClassifier
-    print(f"START: Training RandomForestClassifier on {X.shape[1]} features...")
-    
-    # RandomForest is very robust for this dataset
-    model = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=20,
-        class_weight='balanced',
-        random_state=42,
-        n_jobs=-1
-    )
-    
-    # Split for internal validation
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.1, random_state=42, stratify=y)
-    
-    model.fit(X_train, y_train)
+        # 4. Save Model
+        joblib.dump(model, config['model_path'])
+        joblib.dump({}, config['le_path']) 
 
-    # 4. Accuracy Check
-    val_acc = model.score(X_val, y_val)
-    print(f"RESULT: Internal Validation Accuracy (Binary): {val_acc * 100:.2f}%")
-
-    # 5. Save Model and Encoders
-    os.makedirs("models", exist_ok=True)
-    joblib.dump(model, "models/network_model.pkl")
-    joblib.dump(le_dict, "models/network_label_encoders.pkl")
-    print("SAVED: Improved binary model saved.")
-
-    # 6. Final Test
-    if os.path.exists(test_dataset_path):
-        print("\nTEST: Running Final Exam on test.csv.csv...")
-        test_df = pd.read_csv(test_dataset_path, header=None)
-        if test_df.shape[1] >= 42:
-            test_df = test_df.iloc[:, :len(columns)]
-            test_df.columns = columns
-            X_test = test_df.drop(["label"], axis=1)
-            y_test = test_df["label"]
+        # 5. Feature Shift Evaluation (Test Set B)
+        if os.path.exists(config['test_path']):
+            print(f"TESTING: {config['test_path']} (Shifted Set B)...")
+            test_df = pd.read_csv(config['test_path'], header=None)
             
-            for col, le in le_dict.items():
-                X_test[col] = X_test[col].astype(str).map(
-                    lambda x: le.transform([x])[0] if x in le.classes_ else -1
-                )
+            # Reset columns for test
+            test_df.columns = config['set_b'] + ["label"]
+            y_test_bin = test_df["label"].apply(lambda x: 0 if str(x).strip().lower() == "normal" else 1)
             
-            # Evaluate Binary Accuracy (Normal vs Attack)
-            preds_bin = model.predict(X_test)
-            y_test_bin = y_test.apply(lambda x: 0 if str(x).strip().lower() == "normal" else 1)
+            X_test = test_df[config['set_b']]
+            X_test.columns = config['set_a'] # Map B -> A for the prediction
             
-            from sklearn.metrics import accuracy_score, classification_report
-            test_acc_bin = accuracy_score(y_test_bin, preds_bin)
+            preds = model.predict(X_test)
+            acc = accuracy_score(y_test_bin, preds)
             
-            print(f"TARGET: Final Test Accuracy (Binary Detection): {test_acc_bin * 100:.2f}%")
-            print("\nREPORT: Detailed Classification Report:")
-            print(classification_report(y_test_bin, preds_bin, target_names=["Normal", "Attack"]))
-            
-            if test_acc_bin >= 0.80:
-                print("SUCCESS: Binary Accuracy target reached (>80%)!")
+            print(f"RESULT: Test Accuracy (Shifted): {acc * 100:.2f}%")
+            if acc < 0.85:
+                print(f"⚠️ WARNING: {mod_name} accuracy is below 85% requirement ({acc*100:.2f}%)")
+            else:
+                print(f"✅ SUCCESS: {mod_name} passed 85% requirement!")
+        else:
+            print(f"SKIP: {config['test_path']} not found.")
 
+    except Exception as e:
+        print(f"❌ ERROR in {mod_name}: {e}")
 
-except Exception as e:
-    print(f"ERROR: {e}")
-
-
+print("\n✨ All retrain processes completed.")

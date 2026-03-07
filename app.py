@@ -104,29 +104,125 @@ def upload(mode):
                 "dst_host_rerror_rate", "dst_host_srv_rerror_rate", "label", "difficulty"
             ]
             
-            # Check if likely headerless NSL-KDD (approx 41-43 cols)
+            # Check if likely headerless original NSL-KDD (approx 41-43 cols)
             if 40 <= df.shape[1] <= 44:
                 # If first column is NOT 'duration', assume headerless and reload/set header
                 if df.columns[0] != "duration":
                     print("DEBUG: Detected headerless Network dataset. Assigning headers...")
-                    # Reload without header to parse first row as data
                     df = pd.read_csv(filepath, header=None)
-                    # Assign columns (trim list to match width)
                     df.columns = nsl_probed_columns[:df.shape[1]]
-                    
-                    # Fix Labels if they are strings (e.g., 'normal', 'neptune') -> 0/1
-                    if "label" in df.columns:
-                         # 0 for normal, 1 for everything else
-                         df["label"] = df["label"].apply(lambda x: 0 if str(x).strip() == "normal" else 1)
-                    
-                    # AUTO-SWITCH MODE
-                    if mode == "web":
-                        mode = "network"
-                        flash("Auto-detected Network dataset. Switched to Network Analysis mode.", "info")
+                
+            # Define features for mapping/detection (7+7 = 14 Core Features)
+            network_features_a = [
+                "src_bytes", "dst_bytes", "logged_in", "count", "srv_count", 
+                "dst_host_srv_count", "dst_host_same_srv_rate"
+            ]
+            
+            network_features_b = [
+                "serror_rate", "srv_serror_rate", "same_srv_rate", "diff_srv_rate", 
+                "dst_host_count", "dst_host_same_src_port_rate", "dst_host_serror_rate"
+            ]
+            
+            # Full 14 features for the comprehensive demo
+            network_features_full = network_features_a + network_features_b
+            
+            # Define Web Features (7+7 = 14 Core Features)
+            web_features_a = [
+                "Flow Duration", "Total Fwd Packets", "Total Backward Packets", 
+                "Total Length of Fwd Packets", "Fwd Packet Length Mean", 
+                "Bwd Packet Length Mean", "Flow Bytes/s"
+            ]
+            
+            web_features_b = [
+                "Flow Packets/s", "Flow IAT Mean", "Fwd IAT Total", "Bwd IAT Total", 
+                "Packet Length Mean", "Average Packet Size", "ACK Flag Count"
+            ]
+            
+            web_features_full = web_features_a + web_features_b
+            
+            # --- AUTO-FIX: DATASET MAPPING ---
+            # 1. NSL-KDD Legacy (41-feature)
+            if mode == "network" and 40 <= df.shape[1] <= 44:
+                if df.columns[0] != "duration":
+                    df = pd.read_csv(filepath, header=None)
+                    df.columns = nsl_probed_columns[:df.shape[1]]
+                
+                # Default to Set A (core model)
+                orig_indices = [4, 5, 11, 22, 23, 32, 33]
+                df = df.iloc[:, orig_indices].copy()
+                df.columns = network_features_a
+                flash("Detected legacy network dataset. Reduced to Set A features.", "info")
+                
+            # 2. Network Demo Full (14 features + label)
+            elif mode == "network" and df.shape[1] == 15:
+                df.columns = network_features_full + ["label"]
+                flash("Detected 14-feature Network Demo dataset.", "info")
+                
+            # 3. Network Training/Testing Subset (7 features + label)
+            elif mode == "network" and df.shape[1] == 8:
+                if all(col in df.columns for col in network_features_a):
+                    flash("Detected 7-feature Network Training set (Set A).", "info")
+                elif all(col in df.columns for col in network_features_b):
+                    # Set B detected! Map to Set A for the model (Demo Shift)
+                    df_mapped = df[network_features_b + ["label"]].copy()
+                    df_mapped.columns = network_features_a + ["label"]
+                    df = df_mapped
+                    flash("Detected 7-feature Network Testing set (Set B). Simulating Feature Shift...", "info")
+                else:
+                    df.columns = network_features_a + ["label"]
+                    flash("Detected headerless 8-column network dataset. Assigned Set A headers.", "info")
 
-            # Robustness: Strip whitespace from column names
-            df.columns = df.columns.str.strip()
-            print(f"DEBUG: Uploaded file columns: {df.columns.tolist()}")
+            # 4. Web Demo Full (14 features + label)
+            elif mode == "web" and df.shape[1] == 15:
+                df.columns = web_features_full + ["label"]
+                flash("Detected 14-feature Web Demo dataset.", "info")
+
+            # 5. Web Training/Testing Subset (7 features + label)
+            elif mode == "web" and df.shape[1] == 8:
+                if all(col in df.columns for col in web_features_a):
+                    flash("Detected 7-feature Web Training set (Set A).", "info")
+                elif all(col in df.columns for col in web_features_b):
+                    # Set B detected! Map to Set A for the Web model (Demo Shift)
+                    df_mapped = df[web_features_b + ["label"]].copy()
+                    df_mapped.columns = web_features_a + ["label"]
+                    df = df_mapped
+                    flash("Detected 7-feature Web Testing set (Set B). Simulating Feature Shift...", "info")
+                else:
+                    df.columns = web_features_a + ["label"]
+                    flash("Detected headerless 8-column web dataset. Assigned Set A headers.", "info")
+
+            elif mode == "web" and df.shape[1] == 11: # Legacy CICIDS Web 10-feature
+                web_old = ["Flow Duration", "Total Fwd Packets", "Total Backward Packets", "Total Length of Fwd Packets", "Fwd Packet Length Max", "Fwd Packet Length Mean", "Fwd Packet Length Std", "Bwd Packet Length Max", "Bwd Packet Length Mean", "Flow Bytes/s"]
+                df.columns = web_old + ["label"]
+                df = df[web_features_a + ["label"]]
+                flash("Detected legacy 10-feature web dataset. Migrated to Set A.", "info")
+
+            # Set the feature set for the prediction step (always uses Set A names)
+            network_features = network_features_a 
+            web_features = web_features_a
+            
+            if df.shape[1] == 16: # Old 15-feature network
+                # Map old 15 features to new 7 features
+                df.columns = [
+                    "src_bytes", "dst_bytes", "logged_in", "count", "srv_count", 
+                    "same_srv_rate", "diff_srv_rate", "dst_host_count", "dst_host_srv_count", 
+                    "dst_host_same_srv_rate", "dst_host_diff_srv_rate", "dst_host_same_src_port_rate", 
+                    "dst_host_serror_rate", "service", "flag", "label"
+                ]
+                df = df[network_features + ["label"]]
+                flash("Detected old 15-feature dataset. Migrated to 7-feature set.", "info")
+            elif df.shape[1] == 11: # CICIDS Web 10-feature
+                df.columns = web_features + ["label"]
+                flash("Detected 10-feature CICIDS Web dataset.", "info")
+            elif df.shape[1] == 21: # CICIDS Web 20-feature (Feature Shift)
+                # First 10 are Set A, next 10 are Set B
+                full_cicids = web_features + [
+                    "Flow Packets/s", "Flow IAT Mean", "Flow IAT Max", "Flow IAT Min",
+                    "Fwd IAT Total", "Bwd IAT Total", "Packet Length Mean", 
+                    "Packet Length Std", "Average Packet Size", "ACK Flag Count", "label"
+                ]
+                df.columns = full_cicids
+                flash("Detected 20-feature CICIDS Web dataset (Feature Shift).", "info")
         except Exception as e:
             flash(f"CSV read error: {e}", "danger")
             return redirect(request.url)
@@ -142,28 +238,6 @@ def upload(mode):
             le_dict = network_le if mode == "network" else web_le
             
             # Define features based on mode
-            network_features = [
-                "duration", "protocol_type", "service", "flag", "src_bytes", "dst_bytes",
-                "land", "wrong_fragment", "urgent", "hot", "num_failed_logins", "logged_in",
-                "num_compromised", "root_shell", "su_attempted", "num_root", "num_file_creations",
-                "num_shells", "num_access_files", "num_outbound_cmds", "is_host_login",
-                "is_guest_login", "count", "srv_count", "serror_rate", "srv_serror_rate",
-                "rerror_rate", "srv_rerror_rate", "same_srv_rate", "diff_srv_rate",
-                "srv_diff_host_rate", "dst_host_count", "dst_host_srv_count",
-                "dst_host_same_srv_rate", "dst_host_diff_srv_rate", "dst_host_same_src_port_rate",
-                "dst_host_srv_diff_host_rate", "dst_host_serror_rate", "dst_host_srv_serror_rate",
-                "dst_host_rerror_rate", "dst_host_srv_rerror_rate"
-            ]
-
-            web_features = [
-                "request_duration", "http_method", "user_agent_type", "url_length", "param_count",
-                "special_chars_query", "content_length", "cookie_size", "referrer_type",
-                "is_auth_header_present", "num_redirects", "response_code", "response_time",
-                "bot_score", "ip_reputation", "geo_location_id", "session_lifetime",
-                "db_query_count", "file_upload_count", "api_endpoint_id", "is_ajax",
-                "header_entropy", "payload_entropy", "malicious_signatures_count"
-            ]
-
             all_features = network_features if mode == "network" else web_features
             
             # Check for missing features
